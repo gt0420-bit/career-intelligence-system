@@ -10,15 +10,8 @@ permissions:
   pages: write
   id-token: write
 
-concurrency:
-  group: "pages"
-  cancel-in-progress: false
-
 jobs:
   deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -31,12 +24,16 @@ jobs:
           cache: 'npm'
           
       - name: Install dependencies
-        run: npm install
-      
+        run: npm ci
+        
       - name: Build React app
         run: npm run build
-        env:
-          PUBLIC_URL: /career-intelligence-system
+        
+      - name: Fix asset paths
+        run: |
+          sed -i 's|/static/|./static/|g' build/index.html
+          sed -i 's|href="/|href="./|g' build/index.html
+          sed -i 's|src="/|src="./|g' build/index.html
         
       - name: Setup Pages
         uses: actions/configure-pages@v5
@@ -47,5 +44,4 @@ jobs:
           path: './build'
           
       - name: Deploy to GitHub Pages
-        id: deployment
         uses: actions/deploy-pages@v4
