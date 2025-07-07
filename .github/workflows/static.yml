@@ -32,9 +32,11 @@ jobs:
           
       - name: Install dependencies
         run: npm install
-        
+      
       - name: Build React app
-        run: PUBLIC_URL=. npm run build
+        run: npm run build
+        env:
+          PUBLIC_URL: /career-intelligence-system
         
       - name: Setup Pages
         uses: actions/configure-pages@v5
