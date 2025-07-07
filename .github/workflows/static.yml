@@ -28,13 +28,19 @@ jobs:
         
       - name: Build React app
         run: npm run build
-        
+      
       - name: Fix asset paths
         run: |
-          sed -i 's|/static/|./static/|g' build/index.html
-          sed -i 's|href="/|href="./|g' build/index.html
-          sed -i 's|src="/|src="./|g' build/index.html
-        
+             # Show what we're working with first
+             echo "Before sed:"
+              cat build/index.html | grep -E "(src=|href=)"
+
+               # Fix the paths correctly
+                sed -i 's|="/career-intelligence-system/|="./|g' build/index.html
+                 # Show the result
+                 echo "After sed:"
+                 cat build/index.html | grep -E "(src=|href=)"
+   
       - name: Setup Pages
         uses: actions/configure-pages@v5
         
