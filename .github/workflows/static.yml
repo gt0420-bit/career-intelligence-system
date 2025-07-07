@@ -34,7 +34,7 @@ jobs:
         run: npm install
         
       - name: Build React app
-        run: npm run build
+        run: PUBLIC_URL=. npm run build
         
       - name: Setup Pages
         uses: actions/configure-pages@v5
