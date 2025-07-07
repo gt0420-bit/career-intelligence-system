@@ -2,7 +2,7 @@
   "name": "career-intelligence-system",
   "version": "1.0.0",
   "description": "AI-powered career intelligence platform with proactive skill development recommendations",
-  "homepage": "https://gt0420-bit.github.io",
+  "homepage": "https://gt0420-bit.github.io/career-intelligence-system",
   "private": true,
   "dependencies": {
     "@anthropic-ai/sdk": "^0.9.1",
