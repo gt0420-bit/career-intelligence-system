@@ -1,0 +1,372 @@
+# Hitachi Penske Vehicle Telematics Platform - CI/CD Pipeline
+# Enterprise-grade deployment pipeline with security, testing, and multi-environment support
+
+image: python:3.11-slim
+
+definitions:
+  services:
+    docker:
+      memory: 4096
+    kafka-test:
+      image: confluentinc/cp-kafka:7.5.0
+      environment:
+        KAFKA_NODE_ID: 1
+        KAFKA_PROCESS_ROLES: 'broker,controller'
+        KAFKA_LISTENERS: 'PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:29093'
+        KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://localhost:9092'
+        KAFKA_CONTROLLER_QUORUM_VOTERS: '1@localhost:29093'
+        KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
+        CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
+
+  caches:
+    pip-custom: ~/.cache/pip
+    docker-layers: /var/lib/docker
+
+  steps:
+    # ============= STAGE 1: CODE QUALITY =============
+    - step: &code-quality
+        name: 🔍 Code Quality & Standards
+        caches:
+          - pip-custom
+        script:
+          - echo "📦 Installing quality tools..."
+          - pip install flake8 black isort mypy pylint radon bandit
+          
+          - echo "🎨 Checking code formatting (Black)..."
+          - black --check --diff src/ tests/
+          
+          - echo "📐 Checking import order (isort)..."
+          - isort --check-only --diff src/ tests/
+          
+          - echo "🔎 Running linter (Flake8)..."
+          - flake8 src/ tests/ --max-line-length=120 --exclude=__pycache__,*.pyc --statistics
+          
+          - echo "🔬 Type checking (mypy)..."
+          - mypy src/ --ignore-missing-imports --strict-optional
+          
+          - echo "📊 Code complexity analysis..."
+          - radon cc src/ -a -nc
+          - radon mi src/ -n B
+          
+          - echo "🏆 Code quality passed!"
+        artifacts:
+          - quality-report.txt
+
+    # ============= STAGE 2: SECURITY SCANNING =============
+    - step: &security-scan
+        name: �� Security Vulnerability Scan
+        script:
+          - echo "🛡️ Installing security tools..."
+          - pip install safety bandit semgrep truffleHog3
+          
+          - echo "🔍 Scanning dependencies for vulnerabilities..."
+          - safety check --json --output safety-report.json || true
+          
+          - echo "🕵️ Static Application Security Testing (SAST)..."
+          - bandit -r src/ -f json -o bandit-report.json
+          
+          - echo "🔐 Scanning for secrets..."
+          - truffleHog3 --no-entropy --format json . > secrets-scan.json || true
+          
+          - echo "📝 Semgrep security patterns..."
+          - semgrep --config=auto src/ --json -o semgrep-report.json || true
+          
+          - echo "✅ Security scan complete!"
+        artifacts:
+          - safety-report.json
+          - bandit-report.json
+          - secrets-scan.json
+          - semgrep-report.json
+
+    # ============= STAGE 3: UNIT TESTS =============
+    - step: &unit-tests
+        name: 🧪 Unit Tests
+        caches:
+          - pip-custom
+        script:
+          - echo "📦 Installing dependencies..."
+          - pip install -r requirements.txt -r requirements-dev.txt
+          
+          - echo "🧪 Running unit tests with coverage..."
+          - pytest tests/unit/ -v --tb=short \
+              --cov=src \
+              --cov-report=term-missing \
+              --cov-report=html \
+              --cov-report=xml \
+              --cov-fail-under=80 \
+              --junitxml=junit-unit.xml
+          
+          - echo "✅ Unit tests passed with >80% coverage!"
+        artifacts:
+          - htmlcov/**
+          - coverage.xml
+          - junit-unit.xml
+
+    # ============= STAGE 4: INTEGRATION TESTS =============
+    - step: &integration-tests
+        name: 🔗 Integration Tests
+        services:
+          - kafka-test
+          - docker
+        script:
+          - echo "⏳ Waiting for Kafka to be ready..."
+          - sleep 30
+          
+          - echo "📦 Installing dependencies..."
+          - pip install -r requirements.txt -r requirements-dev.txt
+          
+          - echo "🔗 Running integration tests..."
+          - pytest tests/integration/ -v --tb=short \
+              -m integration \
+              --junitxml=junit-integration.xml
+          
+          - echo "✅ Integration tests passed!"
+        artifacts:
+          - junit-integration.xml
+
+    # ============= STAGE 5: E2E TESTS =============
+    - step: &e2e-tests
+        name: 🎬 End-to-End Tests
+        services:
+          - kafka-test
+          - docker
+        script:
+          - echo "📦 Installing dependencies..."
+          - pip install -r requirements.txt -r requirements-dev.txt
+          
+          - echo "🎬 Running end-to-end tests..."
+          - pytest tests/e2e/ -v --tb=short \
+              -m e2e \
+              --junitxml=junit-e2e.xml
+          
+          - echo "✅ E2E tests passed!"
+        artifacts:
+          - junit-e2e.xml
+
+    # ============= STAGE 6: BUILD DOCKER IMAGES =============
+    - step: &build-images
+        name: 🐳 Build Docker Images
+        services:
+          - docker
+        caches:
+          - docker-layers
+        script:
+          - echo "🏗️ Building Docker images..."
+          - export IMAGE_TAG=${BITBUCKET_COMMIT:0:7}
+          - export REGISTRY="your-registry.com"
+          
+          - echo "📦 Building Producer image..."
+          - docker build -f docker/Dockerfile.producer \
+              -t $REGISTRY/penske-producer:$IMAGE_TAG \
+              -t $REGISTRY/penske-producer:latest .
+          
+          - echo "📦 Building Flink job image..."
+          - docker build -f docker/Dockerfile.flink \
+              -t $REGISTRY/penske-flink:$IMAGE_TAG \
+              -t $REGISTRY/penske-flink:latest .
+          
+          - echo "📦 Building Spark job image..."
+          - docker build -f docker/Dockerfile.spark \
+              -t $REGISTRY/penske-spark:$IMAGE_TAG \
+              -t $REGISTRY/penske-spark:latest .
+          
+          - echo "🔍 Scanning images with Trivy..."
+          - docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+              aquasec/trivy image --severity HIGH,CRITICAL \
+              $REGISTRY/penske-producer:$IMAGE_TAG
+          
+          - echo "✅ Images built and scanned!"
+        artifacts:
+          - image-manifest.txt
+
+    # ============= STAGE 7: PUSH TO REGISTRY =============
+    - step: &push-images
+        name: 📤 Push to Container Registry
+        services:
+          - docker
+        script:
+          - export IMAGE_TAG=${BITBUCKET_COMMIT:0:7}
+          - export REGISTRY="your-registry.com"
+          
+          - echo "🔐 Login to container registry..."
+          - echo $DOCKER_PASSWORD | docker login -u $DOCKER_USERNAME --password-stdin $REGISTRY
+          
+          - echo "📤 Pushing images..."
+          - docker push $REGISTRY/penske-producer:$IMAGE_TAG
+          - docker push $REGISTRY/penske-producer:latest
+          - docker push $REGISTRY/penske-flink:$IMAGE_TAG
+          - docker push $REGISTRY/penske-flink:latest
+          - docker push $REGISTRY/penske-spark:$IMAGE_TAG
+          - docker push $REGISTRY/penske-spark:latest
+          
+          - echo "✅ Images pushed successfully!"
+
+    # ============= STAGE 8: DEPLOY TO DEV =============
+    - step: &deploy-dev
+        name: 🚀 Deploy to Development
+        deployment: development
+        script:
+          - echo "📦 Installing OpenShift CLI..."
+          - curl -LO https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz
+          - tar xzf openshift-client-linux.tar.gz
+          - mv oc /usr/local/bin/
+          
+          - echo "�� Login to OpenShift..."
+          - oc login $OPENSHIFT_SERVER --token=$OPENSHIFT_TOKEN_DEV
+          - oc project penske-dev
+          
+          - echo "🚀 Deploying to development..."
+          - export IMAGE_TAG=${BITBUCKET_COMMIT:0:7}
+          - kubectl apply -k infrastructure/kubernetes/overlays/dev
+          - kubectl set image deployment/producer producer=your-registry.com/penske-producer:$IMAGE_TAG -n penske-dev
+          - kubectl set image deployment/flink-job flink=your-registry.com/penske-flink:$IMAGE_TAG -n penske-dev
+          
+          - echo "⏳ Waiting for rollout..."
+          - kubectl rollout status deployment/producer -n penske-dev --timeout=5m
+          - kubectl rollout status deployment/flink-job -n penske-dev --timeout=5m
+          
+          - echo "🧪 Running smoke tests..."
+          - ./scripts/smoke-tests.sh dev
+          
+          - echo "✅ Deployed to development!"
+
+    # ============= STAGE 9: DEPLOY TO STAGING =============
+    - step: &deploy-staging
+        name: 🎯 Deploy to Staging
+        deployment: staging
+        trigger: manual
+        script:
+          - echo "🚀 Deploying to staging environment..."
+          - ./scripts/deploy.sh staging ${BITBUCKET_COMMIT:0:7}
+          
+          - echo "🧪 Running integration tests on staging..."
+          - ./scripts/smoke-tests.sh staging
+          
+          - echo "📊 Performance tests..."
+          - ./scripts/performance-tests.sh staging
+          
+          - echo "✅ Staging deployment complete!"
+
+    # ============= STAGE 10: DEPLOY TO PRODUCTION =============
+    - step: &deploy-production
+        name: 🏭 Deploy to Production
+        deployment: production
+        trigger: manual
+        script:
+          - echo "🔐 Validating production prerequisites..."
+          - ./scripts/pre-production-checks.sh
+          
+          - echo "📸 Creating backup..."
+          - ./scripts/backup.sh production
+          
+          - echo "🚀 Blue-Green deployment to production..."
+          - ./scripts/deploy.sh production ${BITBUCKET_COMMIT:0:7} --strategy=blue-green
+          
+          - echo "⏳ Monitoring for 10 minutes..."
+          - sleep 600
+          
+          - echo "🧪 Production smoke tests..."
+          - ./scripts/smoke-tests.sh production
+          
+          - echo "✅ Production deployment successful!"
+          - ./scripts/notify-slack.sh "✅ Penske platform v$BITBUCKET_COMMIT deployed to production"
+
+    # ============= STAGE 11: PERFORMANCE TESTS =============
+    - step: &performance-tests
+        name: ⚡ Performance & Load Tests
+        script:
+          - echo "📦 Installing load testing tools..."
+          - pip install locust pytest-benchmark
+          
+          - echo "⚡ Running load tests..."
+          - pytest tests/performance/ -v --benchmark-only
+          
+          - echo "📊 Generating performance report..."
+          - locust -f tests/performance/load_test.py --headless \
+              -u 1000 -r 100 --run-time 5m \
+              --html performance-report.html
+          
+          - echo "✅ Performance tests complete!"
+        artifacts:
+          - performance-report.html
+
+pipelines:
+  # ============= DEFAULT PIPELINE (ALL BRANCHES) =============
+  default:
+    - step: *code-quality
+    - parallel:
+      - step: *security-scan
+      - step: *unit-tests
+
+  # ============= PULL REQUEST PIPELINE =============
+  pull-requests:
+    '**':
+      - step: *code-quality
+      - parallel:
+        - step: *security-scan
+        - step: *unit-tests
+      - step: *integration-tests
+
+  # ============= DEVELOP BRANCH PIPELINE =============
+  branches:
+    develop:
+      - step: *code-quality
+      - parallel:
+        - step: *security-scan
+        - step: *unit-tests
+      - step: *integration-tests
+      - step: *e2e-tests
+      - step: *build-images
+      - step: *push-images
+      - step: *deploy-dev
+
+    # ============= MAIN/MASTER BRANCH PIPELINE =============
+    main:
+      - step: *code-quality
+      - parallel:
+        - step: *security-scan
+        - step: *unit-tests
+      - step: *integration-tests
+      - step: *e2e-tests
+      - step: *performance-tests
+      - step: *build-images
+      - step: *push-images
+      - step: *deploy-dev
+      - step: *deploy-staging
+      - step: *deploy-production
+
+  # ============= CUSTOM PIPELINES =============
+  custom:
+    # Full regression test suite
+    full-test-suite:
+      - step: *code-quality
+      - step: *security-scan
+      - step: *unit-tests
+      - step: *integration-tests
+      - step: *e2e-tests
+      - step: *performance-tests
+    
+    # Security-only scan
+    security-audit:
+      - step: *security-scan
+    
+    # Hotfix deployment
+    hotfix-production:
+      - step: *unit-tests
+      - step: *build-images
+      - step: *push-images
+      - step: *deploy-production
+
+  # ============= TAG PIPELINE (RELEASES) =============
+  tags:
+    'v*':
+      - step: *code-quality
+      - step: *security-scan
+      - step: *unit-tests
+      - step: *integration-tests
+      - step: *build-images
+      - step:
+          name: 📦 Create Release
+          script:
+            - echo "Creating release for tag $BITBUCKET_TAG"
+            - ./scripts/create-release.sh $BITBUCKET_TAG
